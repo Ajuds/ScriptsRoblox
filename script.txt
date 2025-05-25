@@ -1,0 +1,699 @@
+local UserInputService = game:GetService("UserInputService")
+local UserInputService = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- Configurações
+local hubVisible = false
+local espPlayersEnabled = true
+local espMachinesEnabled = true
+local espKillerEnabled = true
+local hitboxEnabled = true
+local infiniteStaminaEnabled = true
+local hitboxSize = 1.25
+local playerEspColor = Color3.fromRGB(255, 255, 0) -- Amarelo para jogadores
+local machineEspColor = Color3.fromRGB(0, 255, 0) -- Verde para máquinas
+local killerEspColor = Color3.fromRGB(255, 0, 0) -- Vermelho para killer
+
+-- Cache para otimização
+local espCache = {}
+local machineCache = {}
+local lastMachineCheck = 0
+local machineSearchCoroutine = nil
+local isSearchingMachines = false
+
+-- Função otimizada para detectar máquinas do Forsaken
+local function isForsaken(object)
+    if not object or not object.Parent then return false end
+    
+    local machineNames = {
+        "machine", "generator", "power", "terminal", "computer", "system",
+        "device", "contraption", "control", "panel", "reactor", "core",
+        "engine", "forsaken", "fusebox", "electrical", "equipment", "vault"
+    }
+    
+    if object:IsA("Model") or object:IsA("Part") or object:IsA("MeshPart") or object:IsA("Union") then
+        local objName = object.Name:lower()
+        for _, machineName in ipairs(machineNames) do
+            if objName:find(machineName) then
+                return true
+            end
+        end
+        
+        -- Verificação adicional para modelos
+        if object:IsA("Model") then
+            for _, child in ipairs(object:GetChildren()) do
+                if child:IsA("StringValue") and child.Name == "ForsakenMachine" then
+                    return true
+                end
+                if child:IsA("Part") and child.Name:lower():find("machine") then
+                    return true
+                end
+            end
+        end
+    end
+    
+    return false
+end
+
+-- Função assíncrona para buscar máquinas sem travar
+local function searchMachinesAsync()
+    if isSearchingMachines then return end
+    isSearchingMachines = true
+    
+    spawn(function()
+        local descendants = workspace:GetDescendants()
+        local batchSize = 50 -- Processar 50 objetos por vez
+        local processed = 0
+        
+        for i, obj in ipairs(descendants) do
+            if not espMachinesEnabled then
+                break -- Para se o ESP foi desabilitado durante a busca
+            end
+            
+            if isForsaken(obj) and not machineCache[obj] then
+                createESPForMachine(obj)
+            end
+            
+            processed = processed + 1
+            
+            -- A cada lote de objetos processados, dar uma pausa para não travar
+            if processed >= batchSize then
+                wait() -- Yield para permitir que outros scripts rodem
+                processed = 0
+            end
+        end
+        
+        isSearchingMachines = false
+    end)
+end
+
+-- Função para detectar killer
+local function isKiller(player)
+    if not player or not player.Character then return false end
+    
+    local character = player.Character
+    local humanoid = character:FindFirstChild("Humanoid")
+    
+    -- Verificações comuns para detectar killer
+    if humanoid then
+        -- Killer geralmente tem velocidade diferente
+        if humanoid.WalkSpeed > 20 or humanoid.WalkSpeed < 12 then
+            return true
+        end
+    end
+    
+    -- Verificar por ferramentas específicas do killer
+    for _, tool in pairs(character:GetChildren()) do
+        if tool:IsA("Tool") then
+            local toolName = tool.Name:lower()
+            if toolName:find("knife") or toolName:find("weapon") or toolName:find("kill") then
+                return true
+            end
+        end
+    end
+    
+    -- Verificar por tags específicas
+    if character:FindFirstChild("KillerTag") or character:FindFirstChild("Killer") then
+        return true
+    end
+    
+    return false
+end
+
+-- Criar a interface do Hub
+local hubGui = Instance.new("ScreenGui")
+hubGui.Name = "ForsakenAdvancedHub"
+hubGui.ResetOnSpawn = false
+hubGui.Enabled = false
+hubGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+hubGui.DisplayOrder = 999
+
+-- Frame principal com design avançado
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 320, 0, 360)
+mainFrame.Position = UDim2.new(0.5, -160, 0.5, -180)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = hubGui
+
+local cornerMain = Instance.new("UICorner")
+cornerMain.CornerRadius = UDim.new(0, 10)
+cornerMain.Parent = mainFrame
+
+local topBorder = Instance.new("Frame")
+topBorder.Name = "TopBorder"
+topBorder.Size = UDim2.new(1, 0, 0, 2)
+topBorder.Position = UDim2.new(0, 0, 0, 0)
+topBorder.BorderSizePixel = 0
+topBorder.Parent = mainFrame
+
+local gradient = Instance.new("UIGradient")
+gradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 183, 255)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(128, 0, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 128))
+})
+gradient.Parent = topBorder
+
+-- Cabeçalho
+local header = Instance.new("Frame")
+header.Name = "Header"
+header.Size = UDim2.new(1, 0, 0, 40)
+header.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+header.BorderSizePixel = 0
+header.Parent = mainFrame
+
+local headerCorner = Instance.new("UICorner")
+headerCorner.CornerRadius = UDim.new(0, 10)
+headerCorner.Parent = header
+
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.Size = UDim2.new(1, -20, 1, 0)
+title.Position = UDim2.new(0, 15, 0, 0)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextSize = 16
+title.Text = "FORSAKEN HUB v1.5"
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.Size = UDim2.new(0, 30, 0, 30)
+closeButton.Position = UDim2.new(1, -35, 0, 5)
+closeButton.BackgroundColor3 = Color3.fromRGB(255, 70, 70)
+closeButton.BorderSizePixel = 0
+closeButton.Font = Enum.Font.GothamBold
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextSize = 14
+closeButton.Text = "X"
+closeButton.Parent = header
+
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 15)
+closeCorner.Parent = closeButton
+
+-- Seção de informações
+local infoSection = Instance.new("Frame")
+infoSection.Name = "InfoSection"
+infoSection.Size = UDim2.new(1, -40, 0, 110)
+infoSection.Position = UDim2.new(0, 20, 0, 50)
+infoSection.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+infoSection.BorderSizePixel = 0
+infoSection.Parent = mainFrame
+
+local infoCorner = Instance.new("UICorner")
+infoCorner.CornerRadius = UDim.new(0, 8)
+infoCorner.Parent = infoSection
+
+local infoLabel = Instance.new("TextLabel")
+infoLabel.Name = "InfoLabel"
+infoLabel.Size = UDim2.new(1, -20, 0, 25)
+infoLabel.Position = UDim2.new(0, 10, 0, 5)
+infoLabel.BackgroundTransparency = 1
+infoLabel.Font = Enum.Font.GothamSemibold
+infoLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+infoLabel.TextSize = 14
+infoLabel.Text = "STATUS DOS RECURSOS"
+infoLabel.TextXAlignment = Enum.TextXAlignment.Left
+infoLabel.Parent = infoSection
+
+-- Status labels
+local espPlayerStatus = Instance.new("TextLabel")
+espPlayerStatus.Name = "ESPPlayerStatus"
+espPlayerStatus.Size = UDim2.new(0, 130, 0, 20)
+espPlayerStatus.Position = UDim2.new(0, 10, 0, 30)
+espPlayerStatus.BackgroundTransparency = 1
+espPlayerStatus.Font = Enum.Font.Gotham
+espPlayerStatus.TextColor3 = Color3.fromRGB(255, 255, 100)
+espPlayerStatus.TextSize = 12
+espPlayerStatus.Text = "ESP Jogadores: ATIVO"
+espPlayerStatus.TextXAlignment = Enum.TextXAlignment.Left
+espPlayerStatus.Parent = infoSection
+
+local espKillerStatus = Instance.new("TextLabel")
+espKillerStatus.Name = "ESPKillerStatus"
+espKillerStatus.Size = UDim2.new(0, 130, 0, 20)
+espKillerStatus.Position = UDim2.new(0.5, 0, 0, 30)
+espKillerStatus.BackgroundTransparency = 1
+espKillerStatus.Font = Enum.Font.Gotham
+espKillerStatus.TextColor3 = Color3.fromRGB(255, 100, 100)
+espKillerStatus.TextSize = 12
+espKillerStatus.Text = "ESP Killer: ATIVO"
+espKillerStatus.TextXAlignment = Enum.TextXAlignment.Left
+espKillerStatus.Parent = infoSection
+
+local espMachineStatus = Instance.new("TextLabel")
+espMachineStatus.Name = "ESPMachineStatus"
+espMachineStatus.Size = UDim2.new(0, 130, 0, 20)
+espMachineStatus.Position = UDim2.new(0, 10, 0, 50)
+espMachineStatus.BackgroundTransparency = 1
+espMachineStatus.Font = Enum.Font.Gotham
+espMachineStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
+espMachineStatus.TextSize = 12
+espMachineStatus.Text = "ESP Máquinas: ATIVO"
+espMachineStatus.TextXAlignment = Enum.TextXAlignment.Left
+espMachineStatus.Parent = infoSection
+
+local hitboxStatusLabel = Instance.new("TextLabel")
+hitboxStatusLabel.Name = "HitboxStatusLabel"
+hitboxStatusLabel.Size = UDim2.new(0, 130, 0, 20)
+hitboxStatusLabel.Position = UDim2.new(0.5, 0, 0, 50)
+hitboxStatusLabel.BackgroundTransparency = 1
+hitboxStatusLabel.Font = Enum.Font.Gotham
+hitboxStatusLabel.TextColor3 = Color3.fromRGB(255, 150, 150)
+hitboxStatusLabel.TextSize = 12
+hitboxStatusLabel.Text = "Hitbox (+25%): ATIVO"
+hitboxStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+hitboxStatusLabel.Parent = infoSection
+
+local staminaStatusLabel = Instance.new("TextLabel")
+staminaStatusLabel.Name = "StaminaStatusLabel"
+staminaStatusLabel.Size = UDim2.new(0, 130, 0, 20)
+staminaStatusLabel.Position = UDim2.new(0, 10, 0, 70)
+staminaStatusLabel.BackgroundTransparency = 1
+staminaStatusLabel.Font = Enum.Font.Gotham
+staminaStatusLabel.TextColor3 = Color3.fromRGB(150, 200, 255)
+staminaStatusLabel.TextSize = 12
+staminaStatusLabel.Text = "Stamina Infinita: ATIVO"
+staminaStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+staminaStatusLabel.Parent = infoSection
+
+-- Seção de configurações
+local settingsSection = Instance.new("Frame")
+settingsSection.Name = "SettingsSection"
+settingsSection.Size = UDim2.new(1, -40, 0, 200)
+settingsSection.Position = UDim2.new(0, 20, 0, 170)
+settingsSection.BackgroundColor3 = Color3.fromRGB(40, 40, 45)
+settingsSection.BorderSizePixel = 0
+settingsSection.Parent = mainFrame
+
+local settingsCorner = Instance.new("UICorner")
+settingsCorner.CornerRadius = UDim.new(0, 8)
+settingsCorner.Parent = settingsSection
+
+local settingsLabel = Instance.new("TextLabel")
+settingsLabel.Name = "SettingsLabel"
+settingsLabel.Size = UDim2.new(1, -20, 0, 25)
+settingsLabel.Position = UDim2.new(0, 10, 0, 5)
+settingsLabel.BackgroundTransparency = 1
+settingsLabel.Font = Enum.Font.GothamSemibold
+settingsLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+settingsLabel.TextSize = 14
+settingsLabel.Text = "CONFIGURAÇÕES"
+settingsLabel.TextXAlignment = Enum.TextXAlignment.Left
+settingsLabel.Parent = settingsSection
+
+-- Função para criar botões de alternância
+local function createToggleButton(name, text, position, defaultOn, callback)
+    local toggleFrame = Instance.new("Frame")
+    toggleFrame.Name = name .. "Frame"
+    toggleFrame.Size = UDim2.new(0, 40, 0, 22)
+    toggleFrame.Position = position
+    toggleFrame.BackgroundColor3 = defaultOn and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(200, 70, 70)
+    toggleFrame.Parent = settingsSection
+    
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(0, 11)
+    toggleCorner.Parent = toggleFrame
+    
+    local toggleCircle = Instance.new("Frame")
+    toggleCircle.Name = "Circle"
+    toggleCircle.Size = UDim2.new(0, 18, 0, 18)
+    toggleCircle.Position = defaultOn and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
+    toggleCircle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    toggleCircle.BorderSizePixel = 0
+    toggleCircle.Parent = toggleFrame
+    
+    local circleCorner = Instance.new("UICorner")
+    circleCorner.CornerRadius = UDim.new(1, 0)
+    circleCorner.Parent = toggleCircle
+    
+    local textLabel = Instance.new("TextLabel")
+    textLabel.Name = name .. "Label"
+    textLabel.Size = UDim2.new(0, 180, 0, 22)
+    textLabel.Position = UDim2.new(0, 50, 0, position.Y.Offset)
+    textLabel.BackgroundTransparency = 1
+    textLabel.Font = Enum.Font.Gotham
+    textLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+    textLabel.TextSize = 13
+    textLabel.Text = text
+    textLabel.TextXAlignment = Enum.TextXAlignment.Left
+    textLabel.Parent = settingsSection
+    
+    local isOn = defaultOn
+    
+    toggleFrame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            isOn = not isOn
+            
+            local targetPosition = isOn and UDim2.new(1, -20, 0, 2) or UDim2.new(0, 2, 0, 2)
+            local targetColor = isOn and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(200, 70, 70)
+            
+            local positionTween = TweenService:Create(toggleCircle, TweenInfo.new(0.2), {Position = targetPosition})
+            local colorTween = TweenService:Create(toggleFrame, TweenInfo.new(0.2), {BackgroundColor3 = targetColor})
+            
+            positionTween:Play()
+            colorTween:Play()
+            
+            callback(isOn)
+        end
+    end)
+    
+    return toggleFrame, textLabel
+end
+
+-- Função corrigida para atualizar hitbox
+local function updateInfiniteStamina(character, enable)
+    if not character then return end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return end
+    
+    if enable then
+        if not humanoid:GetAttribute("OriginalJumpPower") then
+            humanoid:SetAttribute("OriginalJumpPower", humanoid.JumpPower)
+            humanoid:SetAttribute("OriginalJumpHeight", humanoid.JumpHeight)
+        end
+        
+        spawn(function()
+            while infiniteStaminaEnabled and humanoid and humanoid.Parent do
+                if humanoid.Parent == character then
+                    humanoid.JumpPower = 50
+                    humanoid.JumpHeight = 7.2
+                    
+                    local staminaGui = character:FindFirstChild("StaminaGui") or character:FindFirstChild("Stamina")
+                    if staminaGui then
+                        local staminaBar = staminaGui:FindFirstChildOfClass("Frame") or staminaGui:FindFirstChildOfClass("ImageLabel")
+                        if staminaBar then
+                            staminaBar.Size = UDim2.new(1, 0, 1, 0)
+                        end
+                    end
+                    
+                    for _, gui in pairs(character:GetChildren()) do
+                        if gui:IsA("ScreenGui") or gui:IsA("BillboardGui") then
+                            local staminaFrame = gui:FindFirstChild("Stamina") or gui:FindFirstChild("StaminaBar")
+                            if staminaFrame and staminaFrame:IsA("Frame") then
+                                staminaFrame.Size = UDim2.new(1, 0, 1, 0)
+                            end
+                        end
+                    end
+                end
+                wait(0.1)
+            end
+        end)
+    else
+        if humanoid:GetAttribute("OriginalJumpPower") then
+            humanoid.JumpPower = humanoid:GetAttribute("OriginalJumpPower")
+            humanoid.JumpHeight = humanoid:GetAttribute("OriginalJumpHeight")
+        end
+    end
+end
+local function updateHitbox(character, enable)
+    if not character then return end
+    
+    local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+    if not humanoidRootPart then return end
+    
+    if enable then
+        if not humanoidRootPart:GetAttribute("OriginalSize") then
+            humanoidRootPart:SetAttribute("OriginalSize", humanoidRootPart.Size)
+        end
+        humanoidRootPart.Size = humanoidRootPart:GetAttribute("OriginalSize") * hitboxSize
+        humanoidRootPart.Transparency = 0.8
+    else
+        if humanoidRootPart:GetAttribute("OriginalSize") then
+            humanoidRootPart.Size = humanoidRootPart:GetAttribute("OriginalSize")
+            humanoidRootPart.Transparency = 1
+        end
+    end
+end
+
+-- Função para criar ESP de máquinas (movida para cima para ser usada pela função assíncrona)
+local function createESPForMachine(machine)
+    if not espMachinesEnabled or machineCache[machine] then return end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "MachineESP"
+    highlight.FillColor = machineEspColor
+    highlight.OutlineColor = machineEspColor
+    highlight.FillTransparency = 0.3
+    highlight.OutlineTransparency = 0
+    highlight.Adornee = machine
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = machine
+    
+    machineCache[machine] = highlight
+    
+    return highlight
+end
+
+-- Função para limpar ESPs de máquinas
+local function clearMachineESPs()
+    for machine, highlight in pairs(machineCache) do
+        if highlight and highlight.Parent then
+            highlight:Destroy()
+        end
+    end
+    machineCache = {}
+end
+
+-- Criar toggles
+local espPlayersToggle, _ = createToggleButton("ESPPlayers", "ESP Jogadores", UDim2.new(0, 10, 0, 35), espPlayersEnabled, function(state)
+    espPlayersEnabled = state
+    espPlayerStatus.Text = "ESP Jogadores: " .. (state and "ATIVO" or "DESATIVADO")
+    espPlayerStatus.TextColor3 = state and Color3.fromRGB(255, 255, 100) or Color3.fromRGB(150, 150, 150)
+end)
+
+local espKillerToggle, _ = createToggleButton("ESPKiller", "ESP Killer", UDim2.new(0, 10, 0, 65), espKillerEnabled, function(state)
+    espKillerEnabled = state
+    espKillerStatus.Text = "ESP Killer: " .. (state and "ATIVO" or "DESATIVADO")
+    espKillerStatus.TextColor3 = state and Color3.fromRGB(255, 100, 100) or Color3.fromRGB(150, 150, 150)
+end)
+
+local espMachinesToggle, _ = createToggleButton("ESPMachines", "ESP Máquinas", UDim2.new(0, 10, 0, 95), espMachinesEnabled, function(state)
+    espMachinesEnabled = state
+    espMachineStatus.Text = "ESP Máquinas: " .. (state and "ATIVO" or "DESATIVADO")
+    espMachineStatus.TextColor3 = state and Color3.fromRGB(100, 255, 100) or Color3.fromRGB(150, 150, 150)
+    
+    if state then
+        -- Iniciar busca assíncrona quando ativado
+        searchMachinesAsync()
+    else
+        -- Limpar todos os ESPs quando desativado
+        clearMachineESPs()
+    end
+end)
+
+local hitboxToggle, _ = createToggleButton("Hitbox", "Aumentar Hitbox (+25%)", UDim2.new(0, 10, 0, 125), hitboxEnabled, function(state)
+    hitboxEnabled = state
+    hitboxStatusLabel.Text = "Hitbox (+25%): " .. (state and "ATIVO" or "DESATIVADO")
+    hitboxStatusLabel.TextColor3 = state and Color3.fromRGB(255, 150, 150) or Color3.fromRGB(150, 150, 150)
+    
+    if LocalPlayer.Character then
+        updateHitbox(LocalPlayer.Character, state)
+    end
+end)
+
+local staminaToggle, _ = createToggleButton("InfiniteStamina", "Stamina Infinita", UDim2.new(0, 10, 0, 155), infiniteStaminaEnabled, function(state)
+    infiniteStaminaEnabled = state
+    staminaStatusLabel.Text = "Stamina Infinita: " .. (state and "ATIVO" or "DESATIVADO")
+    staminaStatusLabel.TextColor3 = state and Color3.fromRGB(150, 200, 255) or Color3.fromRGB(150, 150, 150)
+    
+    if LocalPlayer.Character then
+        updateInfiniteStamina(LocalPlayer.Character, state)
+    end
+end)
+
+-- Info label
+local keyInfoLabel = Instance.new("TextLabel")
+keyInfoLabel.Name = "KeyInfoLabel"
+keyInfoLabel.Size = UDim2.new(1, -20, 0, 20)
+keyInfoLabel.Position = UDim2.new(0, 10, 0, 180)
+keyInfoLabel.BackgroundTransparency = 1
+keyInfoLabel.Font = Enum.Font.Gotham
+keyInfoLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+keyInfoLabel.TextSize = 12
+keyInfoLabel.Text = "Pressione K para mostrar/esconder o hub"
+keyInfoLabel.TextXAlignment = Enum.TextXAlignment.Center
+keyInfoLabel.Parent = settingsSection
+
+-- Adicionar ao CoreGui
+if syn and syn.protect_gui then
+    syn.protect_gui(hubGui)
+    hubGui.Parent = game:GetService("CoreGui")
+elseif gethui then
+    hubGui.Parent = gethui()
+else
+    hubGui.Parent = game:GetService("CoreGui")
+end
+
+-- Sistema de arrasto
+local isDragging = false
+local dragStart = nil
+local startPos = nil
+
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        isDragging = true
+        dragStart = input.Position
+        startPos = mainFrame.Position
+    end
+end)
+
+header.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        isDragging = false
+    end
+end)
+
+header.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement and isDragging then
+        local delta = input.Position - dragStart
+        mainFrame.Position = UDim2.new(
+            startPos.X.Scale,
+            startPos.X.Offset + delta.X,
+            startPos.Y.Scale,
+            startPos.Y.Offset + delta.Y
+        )
+    end
+end)
+
+closeButton.MouseButton1Click:Connect(function()
+    hubGui.Enabled = false
+    hubVisible = false
+end)
+
+-- Funções de ESP otimizadas
+local function createESPForPlayer(player)
+    if player == LocalPlayer or espCache[player] then return end
+    
+    local character = player.Character
+    if not character then return end
+    
+    local isPlayerKiller = isKiller(player)
+    local espEnabled = isPlayerKiller and espKillerEnabled or espPlayersEnabled
+    local espColor = isPlayerKiller and killerEspColor or playerEspColor
+    
+    if not espEnabled then return end
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = isPlayerKiller and "KillerESP" or "PlayerESP"
+    highlight.FillColor = espColor
+    highlight.OutlineColor = espColor
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 0
+    highlight.Adornee = character
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = character
+    
+    espCache[player] = highlight
+    
+    return highlight
+end
+
+-- Toggle hub visibility
+local function toggleHubVisibility()
+    hubVisible = not hubVisible
+    hubGui.Enabled = hubVisible
+end
+
+-- Eventos de teclado
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if not gameProcessed and input.KeyCode == Enum.KeyCode.K then
+        toggleHubVisibility()
+    end
+end)
+
+-- Eventos de jogadores
+Players.PlayerAdded:Connect(function(player)
+    player.CharacterAdded:Connect(function(character)
+        wait(1)
+        if espCache[player] then
+            espCache[player]:Destroy()
+            espCache[player] = nil
+        end
+        createESPForPlayer(player)
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if espCache[player] then
+        espCache[player]:Destroy()
+        espCache[player] = nil
+    end
+end)
+
+-- Evento do jogador local
+LocalPlayer.CharacterAdded:Connect(function(character)
+    wait(0.5)
+    if hitboxEnabled then
+        updateHitbox(character, true)
+    end
+    if infiniteStaminaEnabled then
+        updateInfiniteStamina(character, true)
+    end
+end)
+
+-- Inicialização
+for _, player in pairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer and player.Character then
+        createESPForPlayer(player)
+    end
+end
+
+-- Inicializar busca de máquinas se ESP estiver ativo
+if espMachinesEnabled then
+    searchMachinesAsync()
+end
+
+-- Aplicar hitbox inicial
+if LocalPlayer.Character and hitboxEnabled then
+    updateHitbox(LocalPlayer.Character, true)
+end
+
+if LocalPlayer.Character and infiniteStaminaEnabled then
+    updateInfiniteStamina(LocalPlayer.Character, true)
+end
+
+-- Loop principal otimizado
+RunService.Heartbeat:Connect(function()
+    -- Verificar ESP de jogadores (60 FPS)
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local isPlayerKiller = isKiller(player)
+            local espEnabled = isPlayerKiller and espKillerEnabled or espPlayersEnabled
+            
+            if espEnabled and not espCache[player] then
+                createESPForPlayer(player)
+            elseif espCache[player] and not espEnabled then
+                espCache[player]:Destroy()
+                espCache[player] = nil
+            end
+        end
+    end
+end)
+
+-- Monitorar novos objetos de forma otimizada
+workspace.DescendantAdded:Connect(function(obj)
+    if espMachinesEnabled and isForsaken(obj) and not machineCache[obj] then
+        -- Pequeno delay para não sobrecarregar
+        spawn(function()
+            wait(0.1)
+            if espMachinesEnabled then -- Verificar novamente após o delay
+                createESPForMachine(obj)
+            end
+        end)
+    end
+end)
+
+-- Inicialização final
+hubGui.Enabled = true
+hubVisible = true
